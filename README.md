@@ -25,9 +25,8 @@ var s = toValue("test")
 
 i == s # False
 
-var is = toValue("22")
-is.asInt() == 22 # True.
-
+var iv = toValue("22")
+iv.asInt() == 22 # True.
 ```
 
 ## Maps
@@ -38,13 +37,14 @@ import values
 var m = newValueMap(autNesting = true)
 
 m.field1 = 22
-echo m.field1.getString()
-echo m.field1.asInt()
+echo m.field1.getString() # "22"
+echo m.field1.asInt() # 22
 
 m.field2 = "xxx"
-m.field3 = @[1, 2, 3, 4, 5]
-echo m.field3[2].getInt()
 
+m.field3 = @[1, 2, 3, 4, 5]
+echo m.field3[2].getInt() # 3
+```
 
 ## Additional Information
 

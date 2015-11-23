@@ -23,9 +23,6 @@ macro testType(): stmt =
 
 testType()
 
-
-
-
 Suite("Values"):
 
   Describe "Value":
