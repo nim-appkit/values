@@ -3,10 +3,15 @@ import omega, alpha
 
 include values
 
+type TestTyp = ref object of RootObj
+  strField: string
+  intField: int
+  floatField: float
+  boolField: bool
 
 macro testType(): stmt =
   result = quote do:
-    type Test = ref object of RootObj
+    type TestTyp = ref object of RootObj
       strField: string
       intField: int
       floatField: float
@@ -16,83 +21,10 @@ macro testType(): stmt =
   acs.copyChildrenTo(result)
   echo(repr(result))
 
-#testType()
+testType()
 
-type
-  Test = ref object of RootObj
-    strField: string
-    intField: int
-    floatField: float
-    boolField: bool
 
-method setProp*[T](o: Test; name: string; val: T) =
-  case name
-  of "strField":
-    when T is type(o.strField):
-      o.strField = val
-    else:
-      raise newException(Exception,
-                        "Field strField is string, not " & name(type(T)))
-  of "intField":
-    when T is type(o.intField):
-      o.intField = val
-    else:
-      raise newException(Exception,
-                        "Field intField is int, not " & name(type(T)))
-  of "floatField":
-    when T is type(o.floatField):
-      o.floatField = val
-    else:
-      raise newException(Exception,
-                        "Field floatField is float, not " & name(type(T)))
-  of "boolField":
-    when T is type(o.boolField):
-      o.boolField = val
-    else:
-      raise newException(Exception,
-                        "Field boolField is bool, not " & name(type(T)))
-  else:
-    raise newException(Exception, "Unknown field: " & name)
 
-method setProp*(o: Test; name: string; val: string) =
-  case name
-  of "strField":
-    o.strField = convertString[string](val)
-  of "intField":
-    o.intField = convertString[int](val)
-  of "floatField":
-    o.floatField = convertString[float](val)
-  of "boolField":
-    o.boolField = convertString[bool](val)
-  else:
-    raise newException(Exception, "Unknown field: " & name)
-
-method setValue*(o: Test; name: string; val: Value) =
-  var typ = ""
-  case name
-  of "strField":
-    o.strField = val.asString()
-  of "intField":
-    o.intField = int(val.asBiggestInt())
-  of "floatField":
-    o.floatField = float(val.asBiggestFloat())
-  of "boolField":
-    o.boolField = val.asBool()
-  else:
-    raise newException(Exception, "Unknown field: " & name)
-
-method getValue*(o: Test; name: string): Value =
-  case name
-  of "strField":
-    result = toValue(o.strField)
-  of "intField":
-    result = toValue(o.intField)
-  of "floatField":
-    result = toValue(o.floatField)
-  of "boolField":
-    result = toValue(o.boolField)
-  else:
-    raise newException(Exception, "Unknown field: " & name)
 
 Suite("Values"):
 
@@ -106,6 +38,35 @@ Suite("Values"):
 
       It "Should determine numeric zero":
         toValue(0).isZero().should(beTrue())
+
+
+  Describe "Sequence value":
+
+    It "Should construct from arbitrary seq":
+      var s = toValue(@["a", "b", "c"])
+      s.seqVal.shouldNot(beNil())
+      s.seqVal.len().should(equal(3))
+      s.seqVal[0].should(equal(toValue("a")))
+
+    It "Should determine length":
+      var s = toValue(@["a", "b", "c"])
+      s.len().should(equal(3))
+
+    It "Should allow access with []":
+      var s = toValue(@["a", "b", "c"])
+      s[1].should(equal(toValue("b")))
+
+    It "Should set with []= and value":
+      var s = toValue(@["a", "b", "c"])
+      s[0] = toValue(22)
+      s[0].should(equal(toValue(22)))
+
+    It "Should .add()":
+      var s = toValue(@["a", "b", "c"])
+      s.add("d")
+      s.len().should(equal(4))
+      s[3].getString().should(equal("d"))
+
 
   Describe("ValueMap"):
 
@@ -149,10 +110,10 @@ Suite("Values"):
       m.nested.x.y[string].should(equal("lala"))
 
   Describe "Type Accessors":
-    var item: Test
+    var item: TestTyp
 
     beforeEach:
-      item = Test()
+      item = TestTyp()
 
     It "Should setProp()":
       item.setProp("strField", "strVal")

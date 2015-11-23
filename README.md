@@ -17,7 +17,34 @@ Alternatively, just clone the repo and add it to your nim path when compiling.
 
 ### Use
 
+```nim
+import values
+
+var i = toValue(22)
+var s = toValue("test")
+
+i == s # False
+
+var is = toValue("22")
+is.asInt() == 22 # True.
+
+```
+
 ## Maps
+
+```nim
+import values
+
+var m = newValueMap(autNesting = true)
+
+m.field1 = 22
+echo m.field1.getString()
+echo m.field1.asInt()
+
+m.field2 = "xxx"
+m.field3 = @[1, 2, 3, 4, 5]
+echo m.field3[2].getInt()
+
 
 ## Additional Information
 

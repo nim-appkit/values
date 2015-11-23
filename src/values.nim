@@ -680,19 +680,54 @@ proc `[]`(v: Value, typ: typedesc): any =
   when typ is ValueMap:
     result = v.mapVal
 
+#######################
+# Sequence accessors. #
+#######################
+
+proc `[]`*(v: Value, index: int): Value =
+  if v.kind != valSeq:
+    raise newValueErr("Value is not a sequence")
+  v.seqVal[index]
+
+proc `[]=`*(v: Value, index: int, val: Value) =
+  if v.kind != valSeq:
+    raise newValueErr("Value is not a sequence")
+  v.seqVal[index] = val
+
+proc `[]=`*[T](v: Value, index: int, val: T) =
+  if v.kind != valSeq:
+    raise newValueErr("Value is not a sequence")
+  v.seqVal[index] = toValue(val)
+
+proc add*[T](v: Value, item: T) =
+  if v.kind == valSeq:
+    v.seqVal.add(toValue(item))
+  else:
+    raise newValueErr("Can't .add() to value of kind: " & v.kind.`$`)
+
+###########################
+# Object / map accessors. #
+###########################
+
 proc `[]`*(v: Value, key: string): Value =
+  # [] accessor for map/object/tuple values.
+
   if v.kind == valValueMap:
     return v.mapVal[key]
   else:
     raise newException(Exception, "Value is not a map / object")
 
 proc `[]=`*(v: Value, key: string, val: Value) =
+  # Set values on maps/objects/tuples.
+
   if v.kind == valValueMap:
     v.mapVal[key] = val
   else:
     raise newException(Exception, "Value is not a map / object")
 
 proc `[]=`*[T](v: Value, key: string, val: T) =
+  # Set values on maps/objects/tuples.
+
   if v.kind == valValueMap:
     v.mapVal[key] = val
   else:
@@ -767,6 +802,7 @@ proc `==`*(a: Value, b: Value): bool =
 
   else:
     raise newValueErr("`==` not implemented for value kind: " & a.kind.`$`)
+
 
 
 ######################
