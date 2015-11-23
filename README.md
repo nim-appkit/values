@@ -44,6 +44,12 @@ m.field2 = "xxx"
 
 m.field3 = @[1, 2, 3, 4, 5]
 echo m.field3[2].getInt() # 3
+
+# Nested.
+m.nestedMap.field1 = "val"
+m.nestedMap.subnested.data = @["a", "b", "c"]
+
+echo m.nestedMap.subnested.data[1].getString() # "b"
 ```
 
 ## Additional Information
