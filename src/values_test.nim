@@ -106,6 +106,10 @@ Suite("Values"):
       m.nested.x.y = "lala"
       m.nested.x.y[string].should(equal("lala"))
 
+    It "Should create value from tuple":
+      var v = toValue((a: 22, b: "str"))
+      v.should(equal((a: 22, b: "str")))
+
   Describe "Type Accessors":
     var item: TestTyp
 

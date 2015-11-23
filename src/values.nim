@@ -71,7 +71,7 @@ type
     of valValueMap:
       mapVal: ValueMap
 
-  ValueMap* = object
+  ValueMap* = ref object
     table: Table[string, Value]
     autoNesting: bool
 
@@ -361,24 +361,6 @@ proc toValue*[T](s: seq[T]): Value =
     seqVal: newSeq
   )
 
-######################
-# generic toValue.  #
-######################
-
-proc toValue*[T](x: T): Value =
-  var val = x
-  var anyVal = toAny(val)
-
-  if anyVal.kind == akRef:
-    anyVal = anyVal[]
-
-  if anyVal.kind == akObject:
-    var p = alloc(anyVal.size())
-    copyMem(p, anyVal.getPointer(), anyVal.size())
-    return Value(kind: valObj, size: anyVal.size(), ptrVal: p) 
-
-  raise newException(Exception, "Unhandled kind: " & anyVal.kind.`$`)
-
 ###############################
 # Generic determineValKind(). #
 ###############################
@@ -629,6 +611,30 @@ proc hash*(v: Value): hashes.Hash =
 
 include ./maps.nim
 
+######################
+# generic toValue.  #
+######################
+
+proc toValue*[T](x: T): Value =
+  if T is tuple:
+    var m = newValueMap()
+    for key, val in x.fieldPairs:
+      m[key] = val
+    return toValue(m)
+
+  var val = x
+  var anyVal = toAny(val)
+
+  if anyVal.kind == akRef:
+    anyVal = anyVal[]
+
+  if anyVal.kind == akObject:
+    var p = alloc(anyVal.size())
+    copyMem(p, anyVal.getPointer(), anyVal.size())
+    return Value(kind: valObj, size: anyVal.size(), ptrVal: p) 
+
+  raise newException(Exception, "Unhandled kind: " & anyVal.kind.`$`)
+
 # Map accessor.
 
 proc getMap*(v: Value): ValueMap =
@@ -759,6 +765,18 @@ proc len*(v: Value): int =
     result = v.mapVal.len()
   else:
     raise newValueErr(".len() not available for value of type " & v.kind.`$`)
+
+proc `==`*(a: Value, b: tuple): bool =
+  if a.kind != valValueMap:
+    return false
+
+  var handledKeys = 0
+  for key, val in b.fieldPairs:
+    if not a.mapVal.hasKey(key):
+      return false
+    handledKeys += 1
+
+  return handledKeys == a.mapVal.len()
 
 proc `==`*(a: Value, b: Value): bool =
   if a.kind != b.kind:
