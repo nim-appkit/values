@@ -36,6 +36,16 @@ iv.asInt() == 22 # True.
 ```nim
 import values
 
+# Create from tuple.
+
+var m1 = toValue((a: 22, b: "val", c: (a: 22)))
+echo m1.a.getInt() # 22
+echo m1.c.a.asString() # "22"
+
+m1.newKey = 55
+
+# Create manually.
+
 var m = newValueMap(autNesting = true)
 
 m.field1 = 22
