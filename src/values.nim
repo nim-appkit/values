@@ -1,6 +1,7 @@
 import typeinfo, typetraits
 import macros
 import tables
+from json import escapeJson
 from strutils import `%`, parseBiggestInt, parseFloat, parseBool, parseInt, splitLines
 from times import parse, format, Time
 import hashes
@@ -114,6 +115,13 @@ type ConversionErr* = object of Exception
 
 proc newConversionErr(msg: string): ref ConversionErr =
   newException(ConversionErr, msg)
+
+#########################
+# Forward declarations. #
+#########################
+
+proc toJson*(v: Value): string
+proc toJson*(m: ValueMap): string
 
 ####################
 # determineValKind #
@@ -558,6 +566,50 @@ proc asString*(v: Value): string =
 proc repr*(v: Value): string =
   "Value[$1]($2)" % [v.kind.`$`, $v]
 
+#############
+# toJson(). #
+#############
+
+proc toJson*(v: Value): string =
+  case v.kind
+  of valUnknown, valNone:
+    result = ""
+
+  of valBool:
+    result = v.boolVal.`$`
+
+  of valChar:
+    result = "\"" & escapeJson(v.charVal.`$`) & "\""
+
+  of valInt:
+    result = v.intVal.`$`
+
+  of valUInt:
+    result = v.uintVal.`$`
+
+  of valFloat:
+    result = v.floatVal.`$`
+
+  of valString:
+    result = escapeJson(v.strVal)
+
+  of valTime:
+    result = escapeJson(times.getLocalTime(v.timeVal).format("yyyy-dd-MM'T'HH:mmzzz"))
+
+  of valSeq:
+    result = "["
+    for i, val in v.seqVal:
+      result &= val.toJson
+      if i < high(v.seqVal):
+        result &= ", "
+    result &= "]"
+
+  of valValueMap:
+    result = v.mapVal.toJson()
+
+  of valObj, valValue:
+    raise newValueErr("toJson() not yet implemented for valObj")
+
 
 #############
 # isZero(). #
@@ -897,6 +949,7 @@ proc convertString*[T](str: string): T =
 
   if not haveResult:
     raise newConversionErr("Can't convert string '$1' to $2." % [str, name(T)])
+
 
 ##########################
 # buildAccessors helper. #

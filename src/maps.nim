@@ -72,3 +72,15 @@ proc repr*(s: seq[ValueMap]): string =
 
   result &= "\n]"
 
+proc toJson*(m: ValueMap): string =
+  result = "{"
+
+  var lastIndex = m.len() - 1
+  var index = 0
+  for key, val in m:
+    result &= escapeJson(key) & ": " & val.toJson()
+    if index < lastIndex:
+      result &= ", "
+    index += 1
+
+  result &= "}"
