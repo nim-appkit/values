@@ -1,8 +1,20 @@
+###############################################################################
+##                                                                           ##
+##                     nim-values library                                    ##
+##                                                                           ##
+##   (c) Christoph Herzog <chris@theduke.at> 2015                            ##
+##                                                                           ##
+##   This project is under the LGPL license.                                 ##
+##   Check LICENSE.txt for details.                                          ##
+##                                                                           ##
+###############################################################################
+
 import typeinfo, typetraits
 import macros
 import tables
-from json import escapeJson
+from json import nil
 from strutils import `%`, parseBiggestInt, parseFloat, parseBool, parseInt, splitLines
+from sequtils import toSeq
 from times import parse, format, Time
 import hashes
 
@@ -250,6 +262,46 @@ proc determineValKind*(x: typedesc): ValKind =
     
   kind
 
+##################
+# Type checkers. #
+##################
+
+proc isInvalid*(v: Value): bool =
+  v.kind == valUnknown
+
+proc isBool*(v: Value): bool =
+  v.kind == valBool
+
+proc isChar*(v: Value): bool =
+  v.kind == valChar
+
+proc isInt*(v: Value): bool =
+  v.kind == valInt
+
+proc isUInt*(v: Value): bool =
+  v.kind == valUInt
+
+proc isFloat*(v: Value): bool =
+  v.kind == valFloat
+
+proc isNumeric*(v: Value): bool =
+  v.kind in {valInt, valUInt, valFloat}
+
+proc isString*(v: Value): bool =
+  v.kind == valString
+
+proc isTime*(v: Value): bool =
+  v.kind == valTime
+
+proc isSeq*(v: Value): bool =
+  v.kind == valSeq
+
+proc isObject*(v: Value): bool =
+  v.kind == valObj
+
+proc isValueMap*(v: Value): bool =
+  v.kind == valValueMap
+
 ####################
 # toValue methods #
 ####################
@@ -340,6 +392,35 @@ proc toValue*(x: times.Time): Value =
 proc toValue*(m: ValueMap): Value =
   Value(kind: valValueMap, mapVal: m)
 
+######################
+# toValue for array. #
+######################
+
+proc toValue*(a: openArray[Value]): Value =
+  var s = newSeq[Value](a.len())
+  for index, item in a:
+    s[index] = item
+  Value(
+    kind: valSeq,
+    itemKind: valValue,
+    seqVal: s
+  )
+
+proc toValue*[T](a: openArray[T]): Value =
+  var kind = determineValKind(T)
+  if kind == valNone:
+    raise newValueErr("Could not determine ValKind of array items for: array[$1]" % [name(T)])
+
+  var s = newSeq[Value](a.len())
+  for index, item in a:
+    s[index] = toValue(item)
+
+  Value(
+    kind: valSeq, 
+    itemKind: kind,
+    seqVal: s
+  )
+
 ####################
 # toValue for seq. #
 ####################
@@ -369,6 +450,12 @@ proc toValue*[T](s: seq[T]): Value =
     seqVal: newSeq
   )
 
+#############
+# ValueMap. #
+#############
+
+include ./maps.nim
+
 ###############################
 # Generic determineValKind(). #
 ###############################
@@ -377,21 +464,6 @@ proc determineValKind*[T](x: T): ValKind =
   var v = toValue(x)
   return v.kind
 
-################
-# isNumeric(). #
-################
-
-proc isNumeric*(v: Value): bool =
-  v.kind in {valInt, valUInt, valFloat}
-
-proc isInt*(v: Value): bool =
-  v.kind == valInt
-
-proc isUint*(v: Value): bool =
-  v.kind == valUInt
-
-proc isFloat*(v: Value): bool =
-  v.kind == valFloat
 
 ####################
 # Value accessors. #
@@ -479,7 +551,7 @@ proc asBiggestUInt*(v: Value): uint64 =
   if v.isUint():
     result = v.uintVal
   elif v.isInt():
-    result = uint64(v.uintVal)
+    result = uint64(v.intVal)
   elif v.isFloat():
     result = uint64(v.floatVal)
   else:
@@ -579,7 +651,7 @@ proc toJson*(v: Value): string =
     result = v.boolVal.`$`
 
   of valChar:
-    result = "\"" & escapeJson(v.charVal.`$`) & "\""
+    result = json.escapeJson(v.charVal.`$`) 
 
   of valInt:
     result = v.intVal.`$`
@@ -591,10 +663,10 @@ proc toJson*(v: Value): string =
     result = v.floatVal.`$`
 
   of valString:
-    result = escapeJson(v.strVal)
+    result = json.escapeJson(v.strVal)
 
   of valTime:
-    result = escapeJson(times.getLocalTime(v.timeVal).format("yyyy-dd-MM'T'HH:mmzzz"))
+    result = json.escapeJson(times.getLocalTime(v.timeVal).format("yyyy-dd-MM'T'HH:mmzzz"))
 
   of valSeq:
     result = "["
@@ -657,22 +729,17 @@ proc hash*(v: Value): hashes.Hash =
     raise newValueErr("Can't hash " & v.kind.`$`)
 
 
-#############
-# ValueMap. #
-#############
-
-include ./maps.nim
-
 ######################
 # generic toValue.  #
 ######################
 
 proc toValue*[T](x: T): Value =
-  if T is tuple:
-    var m = newValueMap()
-    for key, val in x.fieldPairs:
-      m[key] = val
-    return toValue(m)
+  when T is tuple:
+    if T is tuple:
+      var m = newValueMap()
+      for key, val in x.fieldPairs:
+        m[key] = val
+      return toValue(m)
 
   var val = x
   var anyVal = toAny(val)
@@ -680,10 +747,10 @@ proc toValue*[T](x: T): Value =
   if anyVal.kind == akRef:
     anyVal = anyVal[]
 
-  if anyVal.kind == akObject:
-    var p = alloc(anyVal.size())
-    copyMem(p, anyVal.getPointer(), anyVal.size())
-    return Value(kind: valObj, size: anyVal.size(), ptrVal: p) 
+  #if anyVal.kind == akObject:
+    #var p = alloc(anyVal.size())
+    #copyMem(p, anyVal.getPointer(), anyVal.size())
+    #return Value(kind: valObj, size: anyVal.size(), ptrVal: p) 
 
   raise newException(Exception, "Unhandled kind: " & anyVal.kind.`$`)
 
@@ -801,6 +868,34 @@ proc `.=`*[T](v: Value, key: expr, val: T) =
   v[string(key)] = val
 
 
+##################################
+# toValue() for the JSON parser. #
+##################################
+
+proc toValue*(n: json.JsonNode): Value =
+  case n.kind
+  of json.JString:
+    return toValue(n.str)
+  of json.JInt:
+    return toValue(n.num)
+  of json.JFloat:
+    return toValue(n.fnum)
+  of json.JBool:
+    return toValue(n.bval)
+  of json.JNull:
+    return Value(kind: valUnknown)
+  of json.JObject:
+    result = toValue(newValueMap())
+    for item in n.fields:
+      result[item.key] = toValue(item.val)
+  of json.JArray:
+    result = Value(kind: valSeq, seqVal: @[])
+    for item in n.elems:
+      result.seqVal.add(toValue(item))
+
+proc fromJson*(jsonContent: string): Value =
+  toValue(json.parseJson(jsonContent))
+
 ##############
 # Operators. #
 ##############
@@ -817,18 +912,6 @@ proc len*(v: Value): int =
     result = v.mapVal.len()
   else:
     raise newValueErr(".len() not available for value of type " & v.kind.`$`)
-
-proc `==`*(a: Value, b: tuple): bool =
-  if a.kind != valValueMap:
-    return false
-
-  var handledKeys = 0
-  for key, val in b.fieldPairs:
-    if not a.mapVal.hasKey(key):
-      return false
-    handledKeys += 1
-
-  return handledKeys == a.mapVal.len()
 
 proc `==`*(a: Value, b: Value): bool =
   if a.kind != b.kind:
@@ -873,7 +956,8 @@ proc `==`*(a: Value, b: Value): bool =
   else:
     raise newValueErr("`==` not implemented for value kind: " & a.kind.`$`)
 
-
+proc `==`*[T](a: Value, b: T): bool =
+  a == toValue(b)
 
 ######################
 # String conversions #
@@ -949,6 +1033,8 @@ proc convertString*[T](str: string): T =
 
   if not haveResult:
     raise newConversionErr("Can't convert string '$1' to $2." % [str, name(T)])
+
+
 
 
 ##########################

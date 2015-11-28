@@ -1,3 +1,14 @@
+###############################################################################
+##                                                                           ##
+##                     nim-values library                                    ##
+##                                                                           ##
+##   (c) Christoph Herzog <chris@theduke.at> 2015                            ##
+##                                                                           ##
+##   This project is under the LGPL license.                                 ##
+##   Check LICENSE.txt for details.                                          ##
+##                                                                           ##
+###############################################################################
+
 import macros
 import omega, alpha
 
@@ -23,11 +34,13 @@ macro testType(): stmt =
 
 testType()
 
+
 Suite("Values"):
 
   Describe "Value":
 
     It "Should get with typed accessor `[]`":
+      echo("should get typed")
       var v = toValue(22)
       v[int].should(equal(22))
 
@@ -36,6 +49,15 @@ Suite("Values"):
       It "Should determine numeric zero":
         toValue(0).isZero().should(beTrue())
 
+  Describe "toValue":
+
+    It "Should create value from sequence":
+      var a = @[1, 2, 3]
+      var v = toValue(a)
+
+      v.kind.should equal valSeq
+      v.seqVal.len().should equal 3
+      v.seqVal[0].getInt().should equal 1
 
   Describe "Sequence value":
 
@@ -107,53 +129,134 @@ Suite("Values"):
       m.nested.x.y[string].should(equal("lala"))
 
     It "Should create value from tuple":
-      var v = toValue((a: 22, b: "str"))
-      v.should(equal((a: 22, b: "str")))
+      var tpl = (a: 22, b: "str")
+      var v = toValue(tpl)
+      v.a.should be 22
+      v.b.should be "str"
 
-  Describe "Type Accessors":
-    var item: TestTyp
+  Describe "JSON handling":
 
-    beforeEach:
-      item = TestTyp()
+    It "Should parse json from string":
+      var js = """{"str": "string", "intVal": 55, "floatVal": 1.115, "boolVal": true, "nested": {"nestedStr": "str", "arr": [1, 3, "str"]}}"""
+      var v = fromJson(js)
+      v.kind.should be valValueMap
+      var map = v.mapVal
 
-    It "Should setProp()":
-      item.setProp("strField", "strVal")
-      item.strField.should(equal("strVal"))
+      map.should haveKey "str"
+      map["str"].should be "string"
 
-      item.setProp("intField", 23)
-      item.intField.should(equal(23))
+      map.should haveKey "intVal"
+      map.intVal.should be 55
 
-      item.setProp("floatField", 33.33)
-      item.floatField.should(equal(33.33))
+      map.should haveKey "floatVal"
+      map.floatVal.should be 1.115
 
-      item.setProp("boolField", true)
-      item.boolField.should(equal(true))
+      map.should haveKey "boolVal"
+      map.boolVal.should beTrue()
 
-    It "Should setProp with string values":
-      item.setProp("strField", "22")
-      item.strField.should(equal("22"))
+      map.should haveKey "nested"
+      var nested = map.nested
+      nested.kind.should be valValueMap
+      var nestedMap = nested.mapVal
 
-      item.setProp("intField", "55")
-      item.intField.should(equal(55))
+      nestedMap.should haveKey "nestedStr"
+      nestedMap.nestedStr.should be "str"
 
-      item.setProp("floatField", "123.321")
-      item.floatField.should(equal(123.321))
+      nestedMap.should haveKey "arr"
+      nestedMap.arr.isSeq.should beTrue()
 
-      item.setProp("boolField", "y")
-      item.boolField.should(beTrue())
+      var arr = nestedMap.arr
+      arr.isSeq().should beTrue()
+      arr.len().should be 3
+      arr[0].should be 1
+      arr[1].should be 3
+      arr[2].should be "str"
 
-    It "Should getValue()":
-      item.strField = "str"
-      item.getValue("strField").strVal.should(equal("str"))
+    Describe "toJson":
 
-    It "Should setValue()":
-      item.setValue("strField", toValue("xxx"))
-      item.strField.should(equal("xxx"))
+      It "Should convert bool":
+        toValue(true).toJson().should equal "true"
+        toValue(false).toJson().should equal "false"
 
-      item.setValue("intField", toValue(22))
-      item.intField.should(equal(22))
-      item.setValue("intField", toValue("22")) 
-      item.intField.should(equal(22))
+      It "Should convert char":
+        toValue('x').toJson().should equal "\"x\""
+
+      It "Should convert int":
+        toValue(22).toJson().should equal "22"
+
+      It "Should convert uint":
+        toValue(22).toJson().should equal "22"
+
+      It "Should convert float":
+        toValue(22.22).toJson().should equal "22.22"
+
+      It "Should convert string":
+        toValue("test").toJson().should equal "\"test\""
+
+      It "Should convert sequence":
+        var s = toValue(@[1, 2])
+        s.add("22")
+        s.toJson().should equal "[1, 2, \"22\"]"
+
+      It "Should convert map":
+        var json = toValue((s: "str", i: 1, f: 10.11, b: true, nested: (ns: "str", ni: 5, na: @[1, 2, 3]))).toJson()
+        json.should equal """{"nested": {"ni": 5, "ns": "str", "na": [1, 2, 3]}, "f": 10.11, "i": 1, "s": "str", "b": true}""" 
+
+
+  Describe "Accessors":
+
+    Describe "Sequence accessors":
+
+      It "Should access with []":
+        var v = toValue(@[1, 2, 3])
+        v[0].should equal 1
+        v[1].should equal 2
+        v[2].should equal 3
+
+    Describe "Type Accessors":
+      var item: TestTyp
+
+      beforeEach:
+        item = TestTyp()
+
+      It "Should setProp()":
+        item.setProp("strField", "strVal")
+        item.strField.should(equal("strVal"))
+
+        item.setProp("intField", 23)
+        item.intField.should(equal(23))
+
+        item.setProp("floatField", 33.33)
+        item.floatField.should(equal(33.33))
+
+        item.setProp("boolField", true)
+        item.boolField.should(equal(true))
+
+      It "Should setProp with string values":
+        item.setProp("strField", "22")
+        item.strField.should(equal("22"))
+
+        item.setProp("intField", "55")
+        item.intField.should(equal(55))
+
+        item.setProp("floatField", "123.321")
+        item.floatField.should(equal(123.321))
+
+        item.setProp("boolField", "y")
+        item.boolField.should(beTrue())
+
+      It "Should getValue()":
+        item.strField = "str"
+        item.getValue("strField").strVal.should(equal("str"))
+
+      It "Should setValue()":
+        item.setValue("strField", toValue("xxx"))
+        item.strField.should(equal("xxx"))
+
+        item.setValue("intField", toValue(22))
+        item.intField.should(equal(22))
+        item.setValue("intField", toValue("22")) 
+        item.intField.should(equal(22))
 
 
 when isMainModule:

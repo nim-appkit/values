@@ -1,6 +1,6 @@
 # nim-values
 
-**Note: still a WIP. Objects and tuples are not supported yet, but will be soon.**
+**Note: still a WIP. Objects are not supported yet, but will be soon.**
 
 A [Nim](http://nim-lang.org) library for working with arbitrary variables/values.
 Includes a map data structure for easily storing and working with nested, flexible data. 

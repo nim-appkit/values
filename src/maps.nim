@@ -1,3 +1,14 @@
+###############################################################################
+##                                                                           ##
+##                     nim-values library                                    ##
+##                                                                           ##
+##   (c) Christoph Herzog <chris@theduke.at> 2015                            ##
+##                                                                           ##
+##   This project is under the LGPL license.                                 ##
+##   Check LICENSE.txt for details.                                          ##
+##                                                                           ##
+###############################################################################
+
 #############
 # ValueMap. #
 #############
@@ -13,7 +24,7 @@ proc len*(v: ValueMap): int =
 
 proc hasKey*(m: ValueMap, key: string): bool =
   return m.table.hasKey(key)
-  
+
 proc `[]=`*(m: var ValueMap, key: string, val: Value) =
   if key == nil or key == "":
     raise newValueErr("Map keys may not be nil/empty.")
@@ -78,9 +89,16 @@ proc toJson*(m: ValueMap): string =
   var lastIndex = m.len() - 1
   var index = 0
   for key, val in m:
-    result &= escapeJson(key) & ": " & val.toJson()
+    result &= json.escapeJson(key) & ": " & val.toJson()
     if index < lastIndex:
       result &= ", "
     index += 1
 
   result &= "}"
+
+proc ValMap*(t: tuple): ValueMap =
+  # Convenient constructor for maps based on a tuple.
+  result = newValueMap()
+
+  for key, val in t:
+    result[key] = val
