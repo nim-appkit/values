@@ -354,6 +354,9 @@ proc toValueRef*[T](val: T): ValueRef =
     new(result)
     result[] = toValue(val)
 
+proc newNilVal*(): Value =
+  Value(kind: valNil)
+
 ###################
 # Sequence procs. #
 ###################
@@ -539,12 +542,21 @@ proc `==`*[T](a: Value, b: T): bool =
   a == toValue(b)
 
 proc `==`*(a: ValueRef, b: ValueRef): bool =
+  if system.`==`(a, nil) or system.`==`(b, nil):
+    return system.`==`(a, b)
+
   a[] == b[]
 
 proc `==`*(a: ValueRef, b: Value): bool =
+  if system.`==`(a, nil):
+    return b.kind == valNil
+
   a[] == b
 
 proc `==`*(a: Value, b: ValueRef): bool =
+  if system.`==`(b, nil):
+    return a.kind == valNil
+
   a == b[]
 
 proc `==`*[T](a: ValueRef, b: T): bool =
