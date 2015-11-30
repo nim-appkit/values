@@ -95,7 +95,9 @@ type
       map: Table[string, ValueRef]
       autoNesting*: bool
 
-  ValueRef = ref Value
+  ValueRef* = ref Value
+
+  Map* = ValueRef
 
 # Value destructor.
 #proc `=destroy`*(v: var Value) =
