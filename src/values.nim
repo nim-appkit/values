@@ -18,7 +18,7 @@ import tables
 from json import nil
 from strutils import parseBiggestInt, parseFloat, parseBool, parseInt, splitLines, format
 from sequtils import toSeq
-from times import parse, format
+from times import parse, format, `==`, Time, TimeInfo
 import hashes
 
 ###########
@@ -103,6 +103,9 @@ type
 #    if v.ptrVal != nil:
 #      dealloc(v.ptrVal)
 
+proc `$`*(v: Value): string
+proc `$`*(v: ValueRef): string
+proc `==`*(a: ValueRef, b: ValueRef): bool
 
 ##################
 # Type checkers. #
@@ -305,10 +308,11 @@ proc toValue*[T](val: T): Value =
   
   # String. 
   when val is string:
-    result = Value(kind: valString, strVal: val)
+    var strVal = if val == nil: "" else: val
+    result = Value(kind: valString, `strVal`: strVal)
 
   when val is times.Time:
-    result = Value(kind: valTime, timeVal: getLocalTime(val))
+    result = Value(kind: valTime, timeVal: times.getLocalTime(val))
   when val is times.TimeInfo:
     result = Value(kind: valTime, timeVal: val)
 
@@ -318,9 +322,9 @@ proc toValue*[T](val: T): Value =
       result.seqVal.add(toValueRef(x))
 
   when val is set:
-    result = Value(kind: valSet, setVal: newSeq[Value](val.len()))
-    for i, x in x:
-      result.setVal[i] = toValueRef(x)
+    result = Value(kind: valSet, seqVal: newSeq[ValueRef]())
+    for x in val:
+      result.seqVal.add(toValueRef(x))
 
   when val is pointer or val is ptr:
     result = Value(kind: valPointer, pointerVal: val)
@@ -376,11 +380,13 @@ iterator items*(v: ValueRef): ValueRef =
 
 proc `[]=`*[T](v: var Value, key: int, val: T) =
   if v.kind != valSeq:
-    raise newException(ValueError, "[]= can only be used for sequence values, got " & val.kind.`$`)
+    raise newException(ValueError, "[]= can only be used for sequence values, got " & v.kind.`$`)
   v.seqVal[key] = toValueRef(val)
 
 proc `[]=`*[T](v: ValueRef, key: int, val: T) =
-  v[][key] = val
+  if v.kind != valSeq:
+    raise newException(ValueError, "[]= can only be used for sequence values, got " & v.kind.`$`)
+  v.seqVal[key] = toValueRef(val)
 
 proc `[]`*(val: Value, key: int): ValueRef =
   if val.kind != valSeq:
@@ -396,15 +402,16 @@ proc add*[T](v: var Value, x: T) =
   v.seqVal.add(toValueRef(x))
 
 proc add*[T](v: ValueRef, x: T) =
-  v[].add(x)
+  v.seqVal.add(toValueRef(x))
 
-proc newValueSeq(items: varargs[Value, toValueRef]): ValueRef =
+proc newValueSeq*(items: varargs[ValueRef, toValueRef]): ValueRef =
   new(result)
   result.kind = valSeq
+  result.seqVal = @[]
   for item in items:
     result.add(item)
 
-proc `@&`(items: varargs[Value, toValue]): ValueRef =
+proc ValueSeq(items: varargs[ValueRef, toValueRef]): ValueRef =
   newValueSeq(items)
 
 ########
@@ -420,20 +427,20 @@ proc newValueMap*(autoNesting: bool = false): ValueRef =
   )
 
 proc hasKey*(v: ValueRef, key: string): bool =
-  if v[].kind != valMap:
-    raise newException(ValueError, ".hasKey() is not available for " & v[].kind.`$`)
-  result = v[].map.hasKey(key)
+  if v.kind != valMap:
+    raise newException(ValueError, ".hasKey() is not available for " & v.kind.`$`)
+  result = v.map.hasKey(key)
 
 iterator keys*(v: ValueRef): string =
-  if v[].kind != valMap:
-    raise newException(ValueError, ".hasKey() is not available for " & v[].kind.`$`)
+  if v.kind != valMap:
+    raise newException(ValueError, ".hasKey() is not available for " & v.kind.`$`)
   for key in v.map.keys:
     yield key
 
 proc getKeys*(v: ValueRef): seq[string] =
-  if v[].kind != valMap:
-    raise newException(ValueError, ".hasKey() is not available for " & v[].kind.`$`)
-  toSeq(v[].map.keys)
+  if v.kind != valMap:
+    raise newException(ValueError, ".hasKey() is not available for " & v.kind.`$`)
+  toSeq(v.map.keys)
 
 iterator fieldPairs*(v: Value): tuple[key: string, val: ValueRef] =
   if v.kind != valMap:
@@ -447,16 +454,16 @@ iterator fieldPairs*(v: ValueRef): tuple[key: string, val: ValueRef] =
     yield (key, x)
 
 proc `[]=`*[T](v: ValueRef, key: string, val: T) =
-  if v[].kind != valMap:
-    raise newException(ValueError, "[]= can only be used for map values, got " & v[].kind.`$`)
-  v[].map[key] = toValueRef(val)
+  if v.kind != valMap:
+    raise newException(ValueError, "[]= can only be used for map values, got " & v.kind.`$`)
+  v.map[key] = toValueRef(val)
 
 proc `[]`*(v: ValueRef, key: string): ValueRef =
-  if v[].kind != valMap:
-    raise newException(ValueError, "[]= can only be used for map values, got " & v[].kind.`$`)
-  if not v[].map.hasKey(key) and v[].autoNesting:
-    v[].map[key] = newValueMap(true)
-  v[].map[key]
+  if v.kind != valMap:
+    raise newException(ValueError, "[]= can only be used for map values, got " & v.kind.`$`)
+  if not v.map.hasKey(key) and v.autoNesting:
+    v.map[key] = newValueMap(true)
+  v.map[key]
 
 
 proc `.=`*[T](v: ValueRef, key: expr, val: T) =
@@ -532,18 +539,20 @@ proc `==`*[T](a: Value, b: T): bool =
 proc `==`*(a: ValueRef, b: ValueRef): bool =
   a[] == b[]
 
-proc `==`*[T](a: ValueRef, b: T): bool =
+proc `==`*(a: ValueRef, b: Value): bool =
   a[] == b
 
+proc `==`*(a: Value, b: ValueRef): bool =
+  a == b[]
 
+proc `==`*[T](a: ValueRef, b: T): bool =
+  a[] == toValue(b)
 
 #############
 # `$`, repr #
 #############
 
 # Value $.
-
-proc `$`*(v: ValueRef): string
 
 proc `$`*(v: Value): string =
   case v.kind
@@ -738,7 +747,7 @@ proc getBool*(v: Value): bool =
   v.boolVal
 
 proc getBool*(v: ValueRef): bool =
-  v[].boolVal
+  v.boolVal
 
 proc asBool*(v: Value): bool =
   if v.kind == valBool:
@@ -761,7 +770,7 @@ proc getChar*(v: Value): char =
   v.charVal
 
 proc getChar*(v: ValueRef): char =
-  v[].charVal
+  v.charVal
 
 proc asChar*(v: Value): char =
   if v.kind == valChar:
@@ -779,7 +788,7 @@ proc getInt*(v: Value): BiggestInt =
   v.intVal
 
 proc getInt*(v: ValueRef): BiggestInt =
-  v[].intVal
+  v.intVal
 
 proc asBiggestInt*(v: Value): BiggestInt =
   if v.isInt():
@@ -834,7 +843,7 @@ proc getUInt*(v: Value): uint64 =
   v.uintVal
 
 proc getUInt*(v: ValueRef): uint64 =
-  v[].uintVal
+  v.uintVal
 
 proc asUInt64*(v: Value): uint64 =
   if v.isUint():
@@ -865,7 +874,7 @@ proc asUInt32*(v: Value): uint32 =
   uint32(v.asUInt64())
 
 proc getUInt64*(v: ValueRef): uint64 =
-  v[].uintVal
+  v.uintVal
 
 proc asUInt*(v: ValueRef): uint =
   v[].asUInt()
@@ -886,7 +895,7 @@ proc getBiggestFloat*(v: Value): BiggestFloat =
   v.floatVal
 
 proc getBiggestFloat*(v: ValueRef): BiggestFloat =
-  v[].floatVal
+  v.floatVal
 
 proc asBiggestFloat*(v: Value): BiggestFloat =
   if v.isFloat():
@@ -909,7 +918,7 @@ proc getFloat*(v: Value): float =
   v.floatVal
 
 proc getFloat*(v: ValueRef): float =
-  v[].floatVal
+  v.floatVal
 
 proc asFloat*(v: Value): float =
   float(v.asBiggestFloat())
@@ -936,7 +945,7 @@ proc getString*(v: Value): string =
   v.strVal
 
 proc getString*(v: ValueRef): string = 
-  v[].strVal
+  v.strVal
 
 proc asString*(v: Value): string =
   return v.`$`
@@ -950,21 +959,37 @@ proc getTime*(v: Value): times.TimeInfo =
   v.timeVal
 
 proc getTime*(v: ValueRef): times.TimeInfo =
-  v[].timeVal
+  v.timeVal
 
 # Sequence, set, map.
 
 proc getSeq*(v: Value): seq[ValueRef] =
   v.seqVal
 
+
+proc asSeq*(v: Value, typ: typedesc): seq[typ] =
+  if v.kind in {valSeq, valSet}:
+    result = @[]
+    for item in v.seqVal:
+      result.add(item[typ])
+  elif v.kind == valMap:
+    result = @[]
+    for item in v.map.values:
+      result.add(item[typ])
+  else:
+    raise newException(ValueError, ".asSeq() is only available for sequence, set, map. got " & v.kind.`$`)
+
 proc getSeq*(v: ValueRef): seq[ValueRef] =
-  v[].seqVal
+  v.seqVal
+
+proc asSeq*(v: ValueRef, typ: typedesc): seq[typ] =
+  v[].asSeq(typ)
 
 proc getSet*(v: Value): seq[ValueRef] =
   v.seqVal
 
 proc getSet*(v: ValueRef): seq[ValueRef] =
-  v[].seqVal
+  v.seqVal
 
 # Typed accessor.
 
@@ -1007,6 +1032,8 @@ proc `[]`*(v: Value, typ: typedesc): any =
   when typ is string:
     result = v.getString()
 
+  when typ is times.Time:
+    result = times.timeInfoToTime(v.getTime())
   when typ is times.TimeInfo:
     result = v.getTime()
 
