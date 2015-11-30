@@ -9,7 +9,8 @@
 ##                                                                           ##
 ###############################################################################
 
-import macros
+import macros, typetraits
+
 import omega, alpha
 
 include values
@@ -33,7 +34,6 @@ macro testType(): stmt =
   echo(repr(result))
 
 testType()
-
 
 Suite("Values"):
 
@@ -59,7 +59,9 @@ Suite("Values"):
       v.seqVal.len().should equal 3
       v.seqVal[0].getInt().should equal 1
 
-  Describe "Sequence value":
+
+
+  Describe "ValueSequence":
 
     It "Should construct from arbitrary seq":
       var s = toValue(@["a", "b", "c"])
@@ -86,8 +88,21 @@ Suite("Values"):
       s.len().should(equal(4))
       s[3].getString().should(equal("d"))
 
+    It "Should construct with @& macro":
+      #var s = @&["a", 1, 1.1, false]
+      #s.should haveLen 4
+      discard
 
   Describe("ValueMap"):
+
+    It "Should create map with @@":
+      var map = @%(a: 22, b: "str", c: @%(x: false))
+      map.kind.should equal valMap
+      map.hasKey("a").should beTrue()
+      map.a.should equal 22
+      map.hasKey("b").should beTrue()
+      map.b.should equal "str"
+      map.hasKey("c").should beTrue()
 
     It("Should set / get Value with `[]`"):
       var m = newValueMap()
@@ -128,9 +143,14 @@ Suite("Values"):
       m.nested.x.y = "lala"
       m.nested.x.y[string].should(equal("lala"))
 
+    It "Should create ValueMap from tuple with @%()":
+      var m = @%(x: "str", i: 55)
+      m.x.should equal "str"
+      m.i.should equal 55
+
     It "Should create value from tuple":
       var tpl = (a: 22, b: "str")
-      var v = toValue(tpl)
+      var v = toValueRef(tpl)
       v.a.should be 22
       v.b.should be "str"
 
@@ -138,31 +158,22 @@ Suite("Values"):
 
     It "Should parse json from string":
       var js = """{"str": "string", "intVal": 55, "floatVal": 1.115, "boolVal": true, "nested": {"nestedStr": "str", "arr": [1, 3, "str"]}}"""
-      var v = fromJson(js)
-      v.kind.should be valValueMap
-      var map = v.mapVal
+      var map = fromJson(js)
+      map.kind.should be valMap
 
-      map.should haveKey "str"
-      map["str"].should be "string"
+      map.str.should be "string"
 
-      map.should haveKey "intVal"
-      map.intVal.should be 55
+      map["intVal"].should be 55
 
-      map.should haveKey "floatVal"
-      map.floatVal.should be 1.115
+      map["floatVal"].should be 1.115
 
-      map.should haveKey "boolVal"
-      map.boolVal.should beTrue()
+      map["boolVal"].should beTrue()
 
-      map.should haveKey "nested"
-      var nested = map.nested
-      nested.kind.should be valValueMap
-      var nestedMap = nested.mapVal
+      var nestedMap = map.nested
+      nestedMap.kind.should be valMap
 
-      nestedMap.should haveKey "nestedStr"
       nestedMap.nestedStr.should be "str"
 
-      nestedMap.should haveKey "arr"
       nestedMap.arr.isSeq.should beTrue()
 
       var arr = nestedMap.arr
@@ -199,7 +210,7 @@ Suite("Values"):
         s.toJson().should equal "[1, 2, \"22\"]"
 
       It "Should convert map":
-        var json = toValue((s: "str", i: 1, f: 10.11, b: true, nested: (ns: "str", ni: 5, na: @[1, 2, 3]))).toJson()
+        var json = toMap((s: "str", i: 1, f: 10.11, b: true, nested: (ns: "str", ni: 5, na: @[1, 2, 3]))).toJson()
         json.should equal """{"nested": {"ni": 5, "ns": "str", "na": [1, 2, 3]}, "f": 10.11, "i": 1, "s": "str", "b": true}""" 
 
 

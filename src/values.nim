@@ -9,25 +9,36 @@
 ##                                                                           ##
 ###############################################################################
 
-import typeinfo, typetraits
-import macros
+# Must be includes instead of imports.
+include "system/inclrtl.nim"
+include "system/hti.nim"
+
+import typeinfo, typetraits, macros
 import tables
 from json import nil
-from strutils import `%`, parseBiggestInt, parseFloat, parseBool, parseInt, splitLines
+from strutils import parseBiggestInt, parseFloat, parseBool, parseInt, splitLines, format
 from sequtils import toSeq
-from times import parse, format, Time
+from times import parse, format
 import hashes
 
-{.experimental.}
+###########
+# Errors. #
+###########
+
+type ConversionError* = object of Exception
+  discard
+
+proc newConversionError(msg: string): ref ConversionError =
+  newException(ConversionError, msg)
 
 ##########
 # Values #
 ##########
 
 type
-  ValKind* = enum
+  ValueKind* = enum
     valUnknown
-    valNone
+    valNil
     valBool
     valChar
     valInt
@@ -36,15 +47,16 @@ type
     valString
     valTime
     valSeq
+    valSet
     valObj
+    valPointer
     
-    valValue
-    valValueMap
+    valMap
 
 type
-  Value* = ref object of RootObj
-    case kind*: ValKind
-    of valUnknown, valNone:
+  Value* = object
+    case kind*: ValueKind
+    of valUnknown, valNil:
       discard
 
     of valBool:
@@ -54,39 +66,36 @@ type
       charVal: char
 
     of valInt:
-      intVal*: BiggestInt
+      intVal: BiggestInt
 
     of valUInt:
-      uintVal*: uint64
+      uintVal: uint64
 
     of valFloat:
-      floatVal*: BiggestFloat
+      floatVal: BiggestFloat
 
     of valString:
-      strVal*: string
+      strVal: string
 
     of valTime:
-      timeVal*: Time
+      timeVal: times.TimeInfo
 
-    of valSeq:
-      seqVal*: seq[Value]
-      itemKind: ValKind
+    of valSeq, valSet:
+      seqVal: seq[ValueRef]
 
     of valObj:
+      objPointer: pointer
+      nimType: PNimType 
       typeName: string
-      size: int
-      ptrVal: pointer
 
-    of valValue:
-      # Should never happen.
-      discard
+    of valPointer:
+      pointerVal: pointer
 
-    of valValueMap:
-      mapVal: ValueMap
+    of valMap:
+      map: Table[string, ValueRef]
+      autoNesting*: bool
 
-  ValueMap* = ref object
-    table: Table[string, Value]
-    autoNesting: bool
+  ValueRef = ref Value
 
 # Value destructor.
 #proc `=destroy`*(v: var Value) =
@@ -94,52 +103,495 @@ type
 #    if v.ptrVal != nil:
 #      dealloc(v.ptrVal)
 
+
+##################
+# Type checkers. #
+##################
+
+proc isInvalid*(v: Value): bool =
+  v.kind == valUnknown
+
+proc isInvalid*(v: ValueRef): bool =
+  v[].isInvalid()
+
+proc isNil*(v: Value): bool =
+  v.kind == valNil
+
+proc isNil*(v: ValueRef): bool =
+  v[].isNil()
+
+proc isBool*(v: Value): bool =
+  v.kind == valBool
+
+proc isBool*(v: ValueRef): bool =
+  v[].isBool
+
+proc isChar*(v: Value): bool =
+  v.kind == valChar
+
+proc isChar*(v: ValueRef): bool =
+  v[].isChar()
+
+proc isInt*(v: Value): bool =
+  v.kind == valInt
+
+proc isInt*(v: ValueRef): bool =
+  v[].isInt()
+
+proc isUInt*(v: Value): bool =
+  v.kind == valUInt
+
+proc isUInt*(v: ValueRef): bool =
+  v[].isUInt()
+
+proc isFloat*(v: Value): bool =
+  v.kind == valFloat
+
+proc isFloat*(v: ValueRef): bool =
+  v[].isFloat()
+
+proc isNumeric*(v: Value): bool =
+  v.kind in {valInt, valUInt, valFloat}
+
+proc isNumeric*(v: ValueRef): bool =
+  v[].isNumeric()
+
+proc isString*(v: Value): bool =
+  v.kind == valString
+
+proc isString*(v: ValueRef): bool =
+  v[].isString()
+
+proc isTime*(v: Value): bool =
+  v.kind == valTime
+
+proc isTime*(v: ValueRef): bool =
+  v[].isTime
+
+proc isSeq*(v: Value): bool =
+  v.kind == valSeq
+
+proc isSeq*(v: ValueRef): bool =
+  v[].isSeq()
+
+proc isSet*(v: Value): bool =
+  v.kind == valSet
+
+proc isSet*(v: ValueRef): bool =
+  v[].isSet()
+
+proc isObject*(v: Value): bool =
+  v.kind == valObj
+
+proc isObject*(v: ValueRef): bool =
+  v[].isObject()
+
+proc isPointer*(v: Value): bool =
+  v.kind == valPointer
+
+proc isPointer*(v: ValueRef): bool =
+  v[].isPointer()
+
+proc isMap*(v: Value): bool =
+  v.kind == valMap
+
+proc isMap*(v: ValueRef): bool =
+  v[].isMap()
+
+#############
+# isZero(). #
+#############
+
+proc isZero*(v: Value): bool =
+  case v.kind
+  of valUnknown, valNil:
+    result = true
+  of valBool:
+    result = false
+  of valChar:
+    result = v.charVal == '\0'
+  of valInt:
+    result = v.intVal == 0
+  of valUInt:
+    result = v.uintVal == 0
+  of valFloat:
+    result = v.floatVal == 0
+  of valString:
+    result = v.strVal == nil or v.strVal == ""
+  of valPointer:
+    result = v.pointerVal == nil
+  of valObj:
+    result = v.objPointer == nil
+  of valTime, valSeq, valSet, valMap:
+    result = false
+
+proc isZero*(v: ValueRef): bool =
+  v[].isZero()
+
+#################
+# Common procs. #
+#################
+
+proc len*(v: Value): int =
+  case v.kind:
+  of valChar:
+    result = 1
+  of valString:
+    result = v.strVal.len()
+  of valSeq, valSet:
+    result = v.seqVal.len()
+  of valMap:
+    result = v.map.len()
+  else:
+    raise newException(ValueError, ".len() is not available for " & v.kind.`$`)
+
+proc len*(v: ValueRef): int =
+  v[].len()
+
 ###########
-# Errors. #
+# hash(). #
 ###########
 
-type KeyErr* = object of Exception
-  key: string
+proc hash*(v: Value): hashes.Hash =
+  case v.kind
+  of valChar:
+    result = hash(v.charVal)
+  of valInt:
+    result = hash(v.intVal)
+  of valUInt:
+    result = hash(BiggestInt(v.uintVal))
+  of valFloat:
+    result = hash(v.floatVal)
+  of valString:
+    result = hash(v.strVal)
+  of valSeq, valSet:
+    var s: seq[Value] = @[]
+    for item in v.seqVal:
+      s.add(item[])
+    result = hash(s)
+  else:
+    raise newException(ValueError, "Can't hash " & v.kind.`$`)
 
-proc newKeyErr(key: string):  ref KeyErr =
-  var e = newException(KeyErr, "ValueMap does not have key: '" & key & "'")
-  e.key = key
-  return e
+proc hash*(v: ValueRef): hashes.Hash =
+  v[].hash()
 
-type ValueErr* = object of Exception
-  discard
+###########
+# toValue #
+###########
 
-proc newValueErr(msg: string): ref ValueErr =
-  newException(ValueErr, msg)
+# Need a forward declaration for newValueMap().
+proc newValueMap*(autoNesting: bool = false): ValueRef
 
-type TypeErr* = object of Exception
-  kindA: ValKind
-  kindB: ValKind
+proc toValue*[T](val: T): Value =
+  # Bool val. 
+  when val is bool:
+    result = Value(kind: valBool, boolVal: val)
 
-proc newTypeErr(kindA, kindB: ValKind): ref TypeErr =
-  var e = newException(TypeErr, "$1 can not be represented as $2." % [$kindA, $kindB])
-  e.kindA = kindA
-  e.kindB = kindB
-  return e
+  # Char val.
+  when val is char:
+    result = Value(kind: valChar, charVal: val)
 
-type ConversionErr* = object of Exception
-  discard
+  # Int values.
+  when val is int or val is int8 or val is int16 or val is int32 or val is int64:
+    result = Value(kind: valInt, intVal: BiggestInt(val))
+  
+  # UInt values.
+  when val is uint or val is uint8 or val is uint16 or val is uint32 or val is uint64:
+    result = Value(kind: valUInt, uintVal: uint64(val))
+    
+  # Float values.
+  when val is float or val is float32 or val is float64:
+    result = Value(kind: valFloat, floatVal: float64(val))
+  
+  # String. 
+  when val is string:
+    result = Value(kind: valString, strVal: val)
 
-proc newConversionErr(msg: string): ref ConversionErr =
-  newException(ConversionErr, msg)
+  when val is times.Time:
+    result = Value(kind: valTime, timeVal: getLocalTime(val))
+  when val is times.TimeInfo:
+    result = Value(kind: valTime, timeVal: val)
 
-#########################
-# Forward declarations. #
-#########################
+  when val is seq or val is array:
+    result = Value(kind: valSeq, seqVal: @[])
+    for x in val:
+      result.seqVal.add(toValueRef(x))
 
-proc toJson*(v: Value): string
-proc toJson*(m: ValueMap): string
+  when val is set:
+    result = Value(kind: valSet, setVal: newSeq[Value](val.len()))
+    for i, x in x:
+      result.setVal[i] = toValueRef(x)
 
-####################
-# determineValKind #
-####################
+  when val is pointer or val is ptr:
+    result = Value(kind: valPointer, pointerVal: val)
+
+  # Values, valuemaps.
+  when val is Value:
+    result = Value(kind: val.kind)
+    deepCopy(result, val)
+
+  when val is ValueRef:
+    result = val[]
+
+  if T is tuple:
+    raise newException(ValueError, "Must use toValueRef for tuples (results in map)!")
+
+  if result.kind == valUnknown:
+    raise newException(ValueError, "Could not create Value for item of type: " & name(type(val)))
+
+proc toValueRef*[T](val: T): ValueRef =
+  when val is tuple:
+    result = newValueMap()
+    for key, val in val.fieldPairs:
+      result.map[key] = toValueRef(val)
+  else:
+    new(result)
+    result[] = toValue(val)
+
+###################
+# Sequence procs. #
+###################
+
+iterator pairs*(v: Value): tuple[key: int, val: ValueRef] =
+  if v.kind notin {valSeq, valSet}:
+    raise newException(ValueError, ".pairs() iterator is not available for " & v.kind.`$`)
+
+  for i, x in v.seqVal:
+    yield (i, x)
+
+iterator pairs*(v: ValueRef): tuple[key: int, val: ValueRef] =
+  for i, x in v[].pairs:
+    yield (i, x)
+
+iterator items*(v: Value): ValueRef =
+  if v.kind notin {valSeq, valSet}:
+    raise newException(ValueError, ".pairs() iterator is not available for " & v.kind.`$`)
+
+  for x in v.seqVal:
+    yield x
+
+iterator items*(v: ValueRef): ValueRef =
+  for x in v[].items:
+    yield  x
+
+proc `[]=`*[T](v: var Value, key: int, val: T) =
+  if v.kind != valSeq:
+    raise newException(ValueError, "[]= can only be used for sequence values, got " & val.kind.`$`)
+  v.seqVal[key] = toValueRef(val)
+
+proc `[]=`*[T](v: ValueRef, key: int, val: T) =
+  v[][key] = val
+
+proc `[]`*(val: Value, key: int): ValueRef =
+  if val.kind != valSeq:
+    raise newException(ValueError, "[]= can only be used for sequence values, got " & val.kind.`$`)
+  val.seqVal[key]
+
+proc `[]`*(val: ValueRef, key: int): ValueRef =
+  val[][key]
+
+proc add*[T](v: var Value, x: T) =
+  if v.kind != valSeq:
+    raise newException(ValueError, ".add() is not available for " & v.kind.`$`)
+  v.seqVal.add(toValueRef(x))
+
+proc add*[T](v: ValueRef, x: T) =
+  v[].add(x)
+
+proc newValueSeq(items: varargs[Value, toValueRef]): ValueRef =
+  new(result)
+  result.kind = valSeq
+  for item in items:
+    result.add(item)
+
+proc `@&`(items: varargs[Value, toValue]): ValueRef =
+  newValueSeq(items)
+
+########
+# Map. #
+########
+
+proc newValueMap*(autoNesting: bool = false): ValueRef =
+  new(result)
+  result[] = Value(
+    kind: valMap,
+    map: initTable[string, ValueRef](32),
+    `autoNesting`: autoNesting
+  )
+
+proc hasKey*(v: ValueRef, key: string): bool =
+  if v[].kind != valMap:
+    raise newException(ValueError, ".hasKey() is not available for " & v[].kind.`$`)
+  result = v[].map.hasKey(key)
+
+iterator keys*(v: ValueRef): string =
+  if v[].kind != valMap:
+    raise newException(ValueError, ".hasKey() is not available for " & v[].kind.`$`)
+  for key in v.map.keys:
+    yield key
+
+proc getKeys*(v: ValueRef): seq[string] =
+  if v[].kind != valMap:
+    raise newException(ValueError, ".hasKey() is not available for " & v[].kind.`$`)
+  toSeq(v[].map.keys)
+
+iterator fieldPairs*(v: Value): tuple[key: string, val: ValueRef] =
+  if v.kind != valMap:
+    raise newException(ValueError, "fieldPairs can only be used for map values, got " & v.kind.`$`)
+
+  for key, x in v.map:
+    yield (key, x)
+
+iterator fieldPairs*(v: ValueRef): tuple[key: string, val: ValueRef] =
+  for key, x in v[].fieldPairs:
+    yield (key, x)
+
+proc `[]=`*[T](v: ValueRef, key: string, val: T) =
+  if v[].kind != valMap:
+    raise newException(ValueError, "[]= can only be used for map values, got " & v[].kind.`$`)
+  v[].map[key] = toValueRef(val)
+
+proc `[]`*(v: ValueRef, key: string): ValueRef =
+  if v[].kind != valMap:
+    raise newException(ValueError, "[]= can only be used for map values, got " & v[].kind.`$`)
+  if not v[].map.hasKey(key) and v[].autoNesting:
+    v[].map[key] = newValueMap(true)
+  v[].map[key]
+
+
+proc `.=`*[T](v: ValueRef, key: expr, val: T) =
+  v[string(key)] = val
+
+proc `.`*(v: ValueRef, key: expr): ValueRef =
+  return v[string(key)]
+
+proc toMap*(t: tuple): ValueRef =
+  # Convenient constructor for maps based on a tuple.
+  result = newValueMap()
+
+  for key, val in t.fieldPairs():
+    result[key] = val
+
+proc `@%`*(t: tuple): ValueRef =
+  toMap(t)
+
+proc `@%`*(): ValueRef =
+  newValueMap()
+
+
+########
+# `==` #
+########
+
+proc `==`*(a: Value, b: Value): bool =
+  if a.kind != b.kind:
+    return false
+
+  case a.kind
+  of valUnknown, valNil:
+    # Both are valNone.
+    result = true
+
+  of valBool:
+    result = a.boolVal == b.boolVal
+
+  of valChar:
+    result = a.charVal == b.charVal
+
+  of valInt:
+    result = a.intVal == b.intVal
+
+  of valUInt:
+    result = a.uintVal == b.uintVal
+
+  of valFloat:
+    result = a.floatVal == b.floatVal
+
+  of valString:
+    result = a.strVal == b.strVal
+
+  of valSeq, valSet:
+    if a.len() != b.len():
+      return false
+
+    result = true
+    for index, item in a.seqVal:
+      if a.seqVal[index] != b.seqVal[index]:
+        result = false
+        break
+
+  of valMap:
+    result = a.map == b.map
+
+  else:
+    raise newException(ValueError, "`==` not implemented for value kind: " & a.kind.`$`)
+
+proc `==`*[T](a: Value, b: T): bool =
+  a == toValue(b)
+
+proc `==`*(a: ValueRef, b: ValueRef): bool =
+  a[] == b[]
+
+proc `==`*[T](a: ValueRef, b: T): bool =
+  a[] == b
+
+
+
+#############
+# `$`, repr #
+#############
+
+# Value $.
+
+proc `$`*(v: ValueRef): string
+
+proc `$`*(v: Value): string =
+  case v.kind
+  of valUnknown:
+    result = "unknown"
+  of valNil:
+    result = "nil"
+  of valBool:
+    result = $(v.boolVal)
+  of valChar:
+    result = $(v.charVal)
+  of valInt:
+    result = $(v.intVal)
+  of valUInt:
+    result = $(v.uintVal)
+  of valFloat:
+    result = $(v.floatVal)
+  of valString:
+    result = v.strVal
+  of valTime:
+    result = $(v.timeVal)
+  of valSeq, valSet:
+    result = $(v.seqVal)
+  of valPointer:
+    result = repr(v.pointerVal)
+  of valObj:
+    result = "[" & v.typeName & "] " & repr(v.objPointer)
+  of valMap:
+    result = "[Map] =>\n"
+    for key, value in v.fieldPairs():
+      result &= "  '" & key & "' ==> " & repr(value)
+
+proc `$`*(v: ValueRef): string =
+  $(v[])
+
+proc repr*(v: Value): string =
+  "Value[$1]($2)".format(v.kind, v)
+
+proc repr*(v: ValueRef): string =
+  repr(v[])
+
+######################
+# determineValueKind #
+######################
 
 proc determineAnyKind*(x: typedesc): AnyKind =
+  # Determine the AnyKind based on a type description.
+  
   result = akNone
 
   when x is bool:
@@ -200,8 +652,9 @@ proc determineAnyKind*(x: typedesc): AnyKind =
   when x is float64:
     result = akFloat64
 
-proc determineValKind*(x: string): ValKind =
-  result = valUnknown
+proc determineValueKind*(x: string): ValueKind =
+  # Determine ValueKind based on name(type(x)).
+
   case x
   of "bool":
     result = valBool
@@ -215,255 +668,62 @@ proc determineValKind*(x: string): ValKind =
     result = valFloat
   of "string":
     result = valString
-  of "Time":
+  of "pointer", "ptr":
+    result = valPointer
+  of "Time", "TimeInfo":
     result = valTime
   else:
-    discard
+    result = valUnknown
 
-proc determineValKind*(x: typedesc): ValKind =
-  var kind = valUnknown
-  
+proc determineValueKind*(x: typedesc): ValueKind =
   # Bool val. 
   when x is bool:
-    kind = valBool
+    result = valBool
 
   # Char val.
   when x is char:
-    kind = valChar
+    result = valChar
 
   # Int values.
   when x is int or x is int8 or x is int16 or x is int32 or x is int64:
-    kind = valInt
+    result = valInt
   
   # UInt values.
   when x is uint or x is uint8 or x is uint16 or x is uint32 or x is uint64:
-    kind = valUInt
+    result = valUInt
     
   # Float values.
   when x is float or x is float32 or x is float64:
-    kind = valFloat
+    result = valFloat
   
   # String. 
   when x is string:
-    kind = valString
+    result = valString
 
-  when x is Time:
-    kind = valTime
+  when x is times.Time or x is times.TimeInfo:
+    result = valTime
 
-  when x is seq:
-    kind == valSeq
+  when x is seq or x is array:
+    result == valSeq
+
+  when x is set:
+    result = valSet
+
+  when x is pointer:
+    result = valPointer
+
+  when x is ptr or x is pointer:
+    result = valPointer
 
   # Values, valuemaps.
   when x is Value:
-    kind = valValue
+    result = valValue
 
-  when x is ValueMap:
-    kind = valValueMap
+  when x is Map:
+    result = valMap
     
-  kind
-
-##################
-# Type checkers. #
-##################
-
-proc isInvalid*(v: Value): bool =
-  v.kind == valUnknown
-
-proc isBool*(v: Value): bool =
-  v.kind == valBool
-
-proc isChar*(v: Value): bool =
-  v.kind == valChar
-
-proc isInt*(v: Value): bool =
-  v.kind == valInt
-
-proc isUInt*(v: Value): bool =
-  v.kind == valUInt
-
-proc isFloat*(v: Value): bool =
-  v.kind == valFloat
-
-proc isNumeric*(v: Value): bool =
-  v.kind in {valInt, valUInt, valFloat}
-
-proc isString*(v: Value): bool =
-  v.kind == valString
-
-proc isTime*(v: Value): bool =
-  v.kind == valTime
-
-proc isSeq*(v: Value): bool =
-  v.kind == valSeq
-
-proc isObject*(v: Value): bool =
-  v.kind == valObj
-
-proc isValueMap*(v: Value): bool =
-  v.kind == valValueMap
-
-####################
-# toValue methods #
-####################
-
-proc toValue*(v: Value): Value =
-  v
-
-######################
-# toValue for bool. #
-######################
-
-proc toValue*(x: bool): Value =
-  Value(kind: valBool, boolVal: x)
-
-######################
-# toValue for char. #
-######################
-
-proc toValue*(x: char): Value =
-  Value(kind: valChar, charVal: x)
-
-######################
-# toValue for ints. #
-######################
-
-proc toValue*(x: int): Value =
-  Value(kind: valInt, intVal: BiggestInt(x))
-
-proc toValue*(x: int8): Value =
-  Value(kind: valInt, intVal: BiggestInt(x))
-
-proc toValue*(x: int16): Value =
-  Value(kind: valInt, intVal: BiggestInt(x))
-
-proc toValue*(x: int32): Value =
-  Value(kind: valInt, intVal: BiggestInt(x))
-
-proc toValue*(x: int64): Value =
-  Value(kind: valInt, intVal: BiggestInt(x))
-
-#######################
-# toValue for uints. #
-#######################
-
-proc toValue*(x: uint): Value =
-  Value(kind: valUInt, uintVal: uint64(x))
-
-proc toValue*(x: uint8): Value =
-  Value(kind: valUInt, uintVal: uint64(x))
-
-proc toValue*(x: uint16): Value =
-  Value(kind: valUInt, uintVal: uint64(x))
-
-proc toValue*(x: uint32): Value =
-  Value(kind: valUInt, uintVal: uint64(x))
-
-proc toValue*(x: uint64): Value =
-  Value(kind: valUInt, uintVal: x)
-
-########################
-# toValue for floats. #
-########################
-
-proc toValue*(x: float32): Value =
-  Value(kind: valFloat, floatVal: BiggestFloat(x))
-
-proc toValue*(x: float64): Value =
-  Value(kind: valFloat, floatVal: BiggestFloat(x))
-
-########################
-# toValue for string. #
-########################
-
-proc toValue*(x: string): Value =
-  Value(kind: valString, strVal: x)
-
-###########################
-# toValue for times.Time. #
-###########################
-
-proc toValue*(x: times.Time): Value =
-  Value(kind: valTime, timeVal: x)
-
-#########################
-# toValue for ValueMap. #
-#########################
-
-proc toValue*(m: ValueMap): Value =
-  Value(kind: valValueMap, mapVal: m)
-
-######################
-# toValue for array. #
-######################
-
-proc toValue*(a: openArray[Value]): Value =
-  var s = newSeq[Value](a.len())
-  for index, item in a:
-    s[index] = item
-  Value(
-    kind: valSeq,
-    itemKind: valValue,
-    seqVal: s
-  )
-
-proc toValue*[T](a: openArray[T]): Value =
-  var kind = determineValKind(T)
-  if kind == valNone:
-    raise newValueErr("Could not determine ValKind of array items for: array[$1]" % [name(T)])
-
-  var s = newSeq[Value](a.len())
-  for index, item in a:
-    s[index] = toValue(item)
-
-  Value(
-    kind: valSeq, 
-    itemKind: kind,
-    seqVal: s
-  )
-
-####################
-# toValue for seq. #
-####################
-
-proc toValue*(s: seq[Value]): Value =
-  Value(
-    kind: valSeq,
-    itemKind: valValue,
-    seqVal: s
-  )
-
-proc toValue*[T](s: seq[T]): Value =
-  var kind = determineValKind(T)
-  if kind == valNone:
-    raise newValueErr("Could not determine ValKind of sequece items for: seq[$1]" % [name(T)])
-  var s = s
-  if s == nil:
-    s = @[]
-
-  var newSeq: seq[Value] = @[]
-  for item in s:
-    newSeq.add(toValue(item))
-
-  Value(
-    kind: valSeq, 
-    itemKind: kind,
-    seqVal: newSeq
-  )
-
-#############
-# ValueMap. #
-#############
-
-include ./maps.nim
-
-###############################
-# Generic determineValKind(). #
-###############################
-
-proc determineValKind*[T](x: T): ValKind =
-  var v = toValue(x)
-  return v.kind
-
+  if result == valUnknown:
+    raise newException(ValueError, "Could not determine ValueKind for item of type: " & name(type(x))) 
 
 ####################
 # Value accessors. #
@@ -477,6 +737,9 @@ proc strToChar*(str: string): char
 proc getBool*(v: Value): bool =
   v.boolVal
 
+proc getBool*(v: ValueRef): bool =
+  v[].boolVal
+
 proc asBool*(v: Value): bool =
   if v.kind == valBool:
     return v.boolVal
@@ -487,12 +750,18 @@ proc asBool*(v: Value): bool =
   elif v.kind == valChar:
     return parseBool("" & v.charVal)
   else:
-    raise newConversionErr("Can't convert $1 to bool." % [$v.kind])
+    raise newConversionError("Can't convert $1 to bool.".format(v.kind))
+
+proc asBool*(v: ValueRef): bool =
+  v[].asBool()
 
 # Char accessors. 
 
 proc getChar*(v: Value): char =
   v.charVal
+
+proc getChar*(v: ValueRef): char =
+  v[].charVal
 
 proc asChar*(v: Value): char =
   if v.kind == valChar:
@@ -500,14 +769,17 @@ proc asChar*(v: Value): char =
   elif v.kind == valString:
     return strToChar(v.strVal)
   else:
-    raise newConversionErr("Can't convert $1 to char." % [$v.kind])
+    raise newConversionError("Can't convert $1 to char.".format(v.kind))
+
+proc asChar*(v: ValueRef): char =
+  v[].asChar()
 
 # Int accessors.
 proc getInt*(v: Value): BiggestInt =
   v.intVal
 
-proc getBiggestInt*(v: Value): BiggestInt =
-  v.intVal
+proc getInt*(v: ValueRef): BiggestInt =
+  v[].intVal
 
 proc asBiggestInt*(v: Value): BiggestInt =
   if v.isInt():
@@ -521,33 +793,50 @@ proc asBiggestInt*(v: Value): BiggestInt =
   elif v.kind == valString:
     return parseBiggestInt(v.strVal)
   else:
-    raise newConversionErr("Can't convert $1 to int." % [$v.kind])
+    raise newConversionError("Can't convert $1 to int.".format(v.kind))
+
+proc asBiggestInt*(v: ValueRef): BiggestInt =
+  v[].asBiggestInt()
 
 proc asInt*(v: Value): int =
   int(v.asBiggestInt())
 
+proc asInt*(v: ValueRef): int =
+  v[].asInt()
+
 proc asInt8*(v: Value): int8 =
   int8(v.asBiggestInt())
+
+proc asInt8*(v: ValueRef): int8 =
+  v[].asInt8()
 
 proc asInt16*(v: Value): int16 =
   int16(v.asBiggestInt())
 
+proc asInt16*(v: ValueRef): int16 =
+  v[].asInt16()
+
 proc asInt32*(v: Value): int32 =
   int32(v.asBiggestInt())
+
+proc asInt32*(v: ValueRef): int32 =
+  v[].asInt32()
 
 proc asInt64*(v: Value): int64 =
   v.asBiggestInt()
 
+proc asInt64*(v: ValueRef): int64 =
+  v[].asInt64()
 
 # Uint accessors.
 
 proc getUInt*(v: Value): uint64 =
   v.uintVal
 
-proc getBiggestUInt*(v: Value): uint64 =
-  v.uintVal
+proc getUInt*(v: ValueRef): uint64 =
+  v[].uintVal
 
-proc asBiggestUInt*(v: Value): uint64 =
+proc asUInt64*(v: Value): uint64 =
   if v.isUint():
     result = v.uintVal
   elif v.isInt():
@@ -557,29 +846,47 @@ proc asBiggestUInt*(v: Value): uint64 =
   else:
     result = uint64(v.asBiggestInt())
 
+proc asUInt64*(v: ValueRef): uint64 =
+  v[].asUInt64()
+
 proc getUInt64*(v: Value): uint64 =
   v.uintVal
 
-proc asUInt64*(v: Value): uint64 =
-  v.asBiggestUInt()
-
 proc asUInt*(v: Value): uint =
-  uint(v.asBiggestUInt())
+  uint(v.asUInt64())
 
 proc asUInt8*(v: Value): uint8 =
-  uint8(v.asBiggestUInt())
+  uint8(v.asUInt64())
 
 proc asUInt16*(v: Value): uint16 =
-  uint16(v.asBiggestUInt())
+  uint16(v.asUInt64())
 
 proc asUInt32*(v: Value): uint32 =
-  uint32(v.asBiggestUInt())
+  uint32(v.asUInt64())
+
+proc getUInt64*(v: ValueRef): uint64 =
+  v[].uintVal
+
+proc asUInt*(v: ValueRef): uint =
+  v[].asUInt()
+
+proc asUInt8*(v: ValueRef): uint8 =
+  v[].asUInt8()
+
+proc asUInt16*(v: ValueRef): uint16 =
+  v[].asUInt16()
+
+proc asUInt32*(v: ValueRef): uint32 =
+  v[].asUInt32()
 
 
 # Float accessors.
 
 proc getBiggestFloat*(v: Value): BiggestFloat =
   v.floatVal
+
+proc getBiggestFloat*(v: ValueRef): BiggestFloat =
+  v[].floatVal
 
 proc asBiggestFloat*(v: Value): BiggestFloat =
   if v.isFloat():
@@ -593,175 +900,75 @@ proc asBiggestFloat*(v: Value): BiggestFloat =
   elif v.kind == valString:
     return parseFloat(v.strVal)
   else:
-    raise newConversionErr("Can't convert $1 to float." % [$v.kind])
+    raise newConversionError("Can't convert $1 to float.".format(v.kind))
+
+proc asBiggestFloat*(v: ValueRef): BiggestFloat =
+  v[].asBiggestFloat()
 
 proc getFloat*(v: Value): float =
   v.floatVal
 
+proc getFloat*(v: ValueRef): float =
+  v[].floatVal
+
 proc asFloat*(v: Value): float =
   float(v.asBiggestFloat())
+
+proc asFloat*(v: ValueRef): float =
+  v[].asFloat()
 
 proc asFloat32*(v: Value): float32 =
   float32(v.asBiggestFloat())
 
+proc asFloat32*(v: ValueRef): float32 =
+  v[].asFloat32()
+
 proc asFloat64*(v: Value): float64 =
   v.asBiggestFloat()
+
+proc asFloat64*(v: ValueRef): float64 =
+  v[].asFloat64()
+
 
 # String accessor.
 
 proc getString*(v: Value): string = 
   v.strVal
 
-# Value $.
-proc `$`*(v: Value): string =
-  case v.kind
-  of valNone:
-    result = "nil"
-  of valBool:
-    result = $(v.boolVal)
-  of valChar:
-    result = $(v.charVal)
-  of valInt:
-    result = $(v.intVal)
-  of valUInt:
-    result = $(v.uintVal)
-  of valFloat:
-    result = $(v.floatVal)
-  of valString:
-    result = v.strVal
-  else:
-    assert false, "$ not implemented for Value: " & v.kind.`$`
+proc getString*(v: ValueRef): string = 
+  v[].strVal
 
 proc asString*(v: Value): string =
   return v.`$`
 
-proc repr*(v: Value): string =
-  "Value[$1]($2)" % [v.kind.`$`, $v]
+proc asString*(v: ValueRef): string =
+  v[].`$`
 
-#############
-# toJson(). #
-#############
+# Time.
 
-proc toJson*(v: Value): string =
-  case v.kind
-  of valUnknown, valNone:
-    result = ""
+proc getTime*(v: Value): times.TimeInfo =
+  v.timeVal
 
-  of valBool:
-    result = v.boolVal.`$`
+proc getTime*(v: ValueRef): times.TimeInfo =
+  v[].timeVal
 
-  of valChar:
-    result = json.escapeJson(v.charVal.`$`) 
+# Sequence, set, map.
 
-  of valInt:
-    result = v.intVal.`$`
+proc getSeq*(v: Value): seq[ValueRef] =
+  v.seqVal
 
-  of valUInt:
-    result = v.uintVal.`$`
+proc getSeq*(v: ValueRef): seq[ValueRef] =
+  v[].seqVal
 
-  of valFloat:
-    result = v.floatVal.`$`
+proc getSet*(v: Value): seq[ValueRef] =
+  v.seqVal
 
-  of valString:
-    result = json.escapeJson(v.strVal)
-
-  of valTime:
-    result = json.escapeJson(times.getLocalTime(v.timeVal).format("yyyy-dd-MM'T'HH:mmzzz"))
-
-  of valSeq:
-    result = "["
-    for i, val in v.seqVal:
-      result &= val.toJson
-      if i < high(v.seqVal):
-        result &= ", "
-    result &= "]"
-
-  of valValueMap:
-    result = v.mapVal.toJson()
-
-  of valObj, valValue:
-    raise newValueErr("toJson() not yet implemented for valObj")
-
-
-#############
-# isZero(). #
-#############
-
-proc isZero*(v: Value): bool =
-  if v.isNumeric():
-    return v.asBiggestFloat() == 0
-
-  case v.kind
-  of valNone:
-    result = true
-  of valBool:
-    result = false
-  of valChar:
-    result = v.charVal == '\0'
-  of valString:
-    result = v.strVal == nil or v.strVal == ""
-  of valObj:
-    result = v.ptrVal == nil
-  of valValueMap:
-    result = false
-  else:
-    raise newException(Exception, "isZero() not implemented for kind " & $(v.kind))
-
-###########
-# hash(). #
-###########
-
-proc hash*(v: Value): hashes.Hash =
-  case v.kind
-  of valChar:
-    result = hash(v.charVal)
-  of valInt:
-    result = hash(v.intVal)
-  of valUInt:
-    result = hash(v.asBiggestInt)
-  of valFloat:
-    result = hash(v.floatVal)
-  of valString:
-    result = hash(v.strVal)
-  of valSeq:
-    result = hash(v.seqVal)
-  else:
-    raise newValueErr("Can't hash " & v.kind.`$`)
-
-
-######################
-# generic toValue.  #
-######################
-
-proc toValue*[T](x: T): Value =
-  when T is tuple:
-    if T is tuple:
-      var m = newValueMap()
-      for key, val in x.fieldPairs:
-        m[key] = val
-      return toValue(m)
-
-  var val = x
-  var anyVal = toAny(val)
-
-  if anyVal.kind == akRef:
-    anyVal = anyVal[]
-
-  #if anyVal.kind == akObject:
-    #var p = alloc(anyVal.size())
-    #copyMem(p, anyVal.getPointer(), anyVal.size())
-    #return Value(kind: valObj, size: anyVal.size(), ptrVal: p) 
-
-  raise newException(Exception, "Unhandled kind: " & anyVal.kind.`$`)
-
-# Map accessor.
-
-proc getMap*(v: Value): ValueMap =
-  v.mapVal
+proc getSet*(v: ValueRef): seq[ValueRef] =
+  v[].seqVal
 
 # Typed accessor.
 
-proc `[]`(v: Value, typ: typedesc): any =
+proc `[]`*(v: Value, typ: typedesc): any =
   when typ is bool:
     result = v.asBool()
 
@@ -800,164 +1007,108 @@ proc `[]`(v: Value, typ: typedesc): any =
   when typ is string:
     result = v.getString()
 
-  # TODO: time, object, sequence.
+  when typ is times.TimeInfo:
+    result = v.getTime()
 
-  when typ is ValueMap:
-    result = v.mapVal
+  # TODO: object, sequence.
 
-#######################
-# Sequence accessors. #
-#######################
+proc `[]`*(v: ValueRef, typ: typedesc): any =
+  v[][typ]
 
-proc `[]`*(v: Value, index: int): Value =
-  if v.kind != valSeq:
-    raise newValueErr("Value is not a sequence")
-  v.seqVal[index]
+#################
+# JSON support. #
+#################
 
-proc `[]=`*(v: Value, index: int, val: Value) =
-  if v.kind != valSeq:
-    raise newValueErr("Value is not a sequence")
-  v.seqVal[index] = val
-
-proc `[]=`*[T](v: Value, index: int, val: T) =
-  if v.kind != valSeq:
-    raise newValueErr("Value is not a sequence")
-  v.seqVal[index] = toValue(val)
-
-proc add*[T](v: Value, item: T) =
-  if v.kind == valSeq:
-    v.seqVal.add(toValue(item))
-  else:
-    raise newValueErr("Can't .add() to value of kind: " & v.kind.`$`)
-
-###########################
-# Object / map accessors. #
-###########################
-
-proc `[]`*(v: Value, key: string): Value =
-  # [] accessor for map/object/tuple values.
-
-  if v.kind == valValueMap:
-    return v.mapVal[key]
-  else:
-    raise newException(Exception, "Value is not a map / object")
-
-proc `[]=`*(v: Value, key: string, val: Value) =
-  # Set values on maps/objects/tuples.
-
-  if v.kind == valValueMap:
-    v.mapVal[key] = val
-  else:
-    raise newException(Exception, "Value is not a map / object")
-
-proc `[]=`*[T](v: Value, key: string, val: T) =
-  # Set values on maps/objects/tuples.
-
-  if v.kind == valValueMap:
-    v.mapVal[key] = val
-  else:
-    raise newException(Exception, "Value is not a map / object")
-
-proc `.`*(v: Value, key: expr): Value =
-  v[string(key)]
-
-proc `.=`*(v: Value, key: expr, val: Value) =
-  v[string(key)] = val
-
-proc `.=`*[T](v: Value, key: expr, val: T) =
-  v[string(key)] = val
-
-
-##################################
+###################################
 # toValue() for the JSON parser. #
 ##################################
 
-proc toValue*(n: json.JsonNode): Value =
+proc toValueRef*(n: json.JsonNode): ValueRef =
   case n.kind
   of json.JString:
-    return toValue(n.str)
+    return toValueRef(n.str)
   of json.JInt:
-    return toValue(n.num)
+    return toValueRef(n.num)
   of json.JFloat:
-    return toValue(n.fnum)
+    return toValueRef(n.fnum)
   of json.JBool:
-    return toValue(n.bval)
+    return toValueRef(n.bval)
   of json.JNull:
-    return Value(kind: valUnknown)
+    new(result)
+    result.kind = valNil 
   of json.JObject:
-    result = toValue(newValueMap())
+    result = newValueMap()
     for item in n.fields:
-      result[item.key] = toValue(item.val)
+      result[item.key] = toValueRef(item.val)
   of json.JArray:
-    result = Value(kind: valSeq, seqVal: @[])
+    new(result)
+    result.kind = valSeq
+    result.seqVal = @[]
     for item in n.elems:
-      result.seqVal.add(toValue(item))
+      result.seqVal.add(toValueRef(item))
 
-proc fromJson*(jsonContent: string): Value =
-  toValue(json.parseJson(jsonContent))
 
-##############
-# Operators. #
-##############
+ 
+proc toJson*(v: ValueRef): string
 
-proc len*(v: Value): int =
+proc toJson*(v: Value): string =
   case v.kind
-  of valChar:
-    result = 1
-  of valString:
-    result = v.strVal.len()
-  of valSeq:
-    result = v.seqVal.len()
-  of valValueMap:
-    result = v.mapVal.len()
-  else:
-    raise newValueErr(".len() not available for value of type " & v.kind.`$`)
-
-proc `==`*(a: Value, b: Value): bool =
-  if a.kind != b.kind:
-    return false
-
-  case a.kind
-  of valNone:
-    # Bot are valNone.
-    result = true
+  of valUnknown:
+    result = ""
+  of valNil:
+    result = "null"
 
   of valBool:
-    result = a.boolVal == b.boolVal
+    result = v.boolVal.`$`
 
   of valChar:
-    result = a.charVal == b.charVal
+    result = json.escapeJson(v.charVal.`$`) 
 
   of valInt:
-    result = a.intVal == b.intVal
+    result = v.intVal.`$`
 
   of valUInt:
-    result = a.uintVal == b.uintVal
+    result = v.uintVal.`$`
 
   of valFloat:
-    result = a.floatVal == b.floatVal
+    result = v.floatVal.`$`
 
   of valString:
-    result = a.strVal == b.strVal
+    result = json.escapeJson(v.strVal)
 
-  of valSeq:
-    if a.len() != b.len():
-      return false
+  of valTime:
+    result = json.escapeJson(v.timeVal.format("yyyy-dd-MM'T'HH:mmzzz"))
 
-    for index, item in a.seqVal:
-      result = true
-      if a.seqVal[index] != b.seqVal[index]:
-        result = false
-        break
+  of valSeq, valSet:
+    result = "["
+    for i, val in v.seqVal:
+      result &= val.toJson()
+      if i < high(v.seqVal):
+        result &= ", "
+    result &= "]"
 
-  of valValueMap:
-    result = a.mapVal == b.mapVal
+  of valMap:
+    result = "{"
 
-  else:
-    raise newValueErr("`==` not implemented for value kind: " & a.kind.`$`)
+    var lastIndex = v.len() - 1
+    var index = 0
+    for key, val in v.fieldPairs:
+      result &= json.escapeJson(key) & ": " & val[].toJson()
+      if index < lastIndex:
+        result &= ", "
+      index += 1
 
-proc `==`*[T](a: Value, b: T): bool =
-  a == toValue(b)
+    result &= "}"
+
+
+  of valObj, valPointer:
+    raise newException(ValueError, "toJson() not yet implemented for " & v.kind.`$`)
+
+proc toJson*(v: ValueRef): string =
+  v[].toJson()
+
+proc fromJson*(jsonContent: string): ValueRef =
+  toValueRef(json.parseJson(jsonContent))
 
 ######################
 # String conversions #
@@ -965,7 +1116,7 @@ proc `==`*[T](a: Value, b: T): bool =
 
 proc strToChar(str: string): char =
   if str == nil:
-    raise newConversionErr("Can't convert nil string.")
+    raise newConversionError("Can't convert nil string.")
 
   case str.len():
   of 0:
@@ -973,12 +1124,12 @@ proc strToChar(str: string): char =
   of 1:
     result = str[0]
   else:
-    raise newConversionErr("Can't convert str '$1' to char: must have length 1" % [str])
+    raise newConversionError("Can't convert str '$1' to char: must have length 1".format(str))
 
 
 proc convertString*[T](str: string): T =
   if str == nil:
-    raise newConversionErr("Can't convert nil string.")
+    raise newConversionError("Can't convert nil string.")
 
   var haveResult = false
 
@@ -1032,7 +1183,7 @@ proc convertString*[T](str: string): T =
     haveResult = true
 
   if not haveResult:
-    raise newConversionErr("Can't convert string '$1' to $2." % [str, name(T)])
+    raise newConversionError("Can't convert string '$1' to $2.".format(str, name(T)))
 
 
 
@@ -1043,7 +1194,7 @@ proc convertString*[T](str: string): T =
 
 proc buildAccessors*(typeName: string, fields: seq[tuple[name, typ: string]]): string =
   # Build setProp().
-  var code = "method setProp*[T](o: $1, name: string, val: T) =\n" % [typeName]
+  var code = "method setProp*[T](o: $1, name: string, val: T) =\n".format(typeName)
   code &= "  case name\n"
   for field in fields:
     code &= """  of "$1": 
@@ -1062,22 +1213,22 @@ proc buildAccessors*(typeName: string, fields: seq[tuple[name, typ: string]]): s
               s.add(cast[$2](item))
             o.$1 = s
         else:
-          raise newException(Exception, "Field $1 is $2, not " & name(type(T)))""" % [field.name, field.typ]
+          raise newException(Exception, "Field $1 is $2, not " & name(type(T)))""" .format(field.name, field.typ)
     code &= "\n"
   code &= """  else: raise newException(Exception, "Unknown field: " & name)"""
   code &= "\n\n"
 
   # Build setProp() for strings.
-  code &= "method setProp*(o: $1, name: string, val: string) =\n" % [typeName]
+  code &= "method setProp*(o: $1, name: string, val: string) =\n".format(typeName)
   code &= "  case name\n"
   for field in fields:
-    code &= """  of "$1": o.$1 = convertString[$2](val)""" % [field.name, field.typ]
+    code &= """  of "$1": o.$1 = convertString[$2](val)""".format(field.name, field.typ)
     code &= "\n"
   code &= """  else: raise newException(Exception, "Unknown field: " & name)"""
   code &= "\n\n"
 
   # Build setValue().
-  code &= "method setValue*(o: $1, name: string, val: Value) =\n" % [typeName]
+  code &= "method setValue*(o: $1, name: string, val: Value) =\n".format(typeName)
   # Check that field exists and determine type.
   code &= "  var typ = \"\"\n"
   code &= "  case name\n"
@@ -1085,31 +1236,31 @@ proc buildAccessors*(typeName: string, fields: seq[tuple[name, typ: string]]): s
     var setter = ""
     case field.typ
     of "bool":
-      setter = "o.$1 = val.asBool()" % [field.name]
+      setter = "o.$1 = val.asBool()".format(field.name)
     of "char":
-      setter = "o.$1 = val.asChar()" % [field.name]
+      setter = "o.$1 = val.asChar()".format(field.name)
     of "int", "int8", "int16", "int32", "int64":
-      setter = "o.$1 = $2(val.asBiggestInt())" % [field.name, field.typ]
+      setter = "o.$1 = $2(val.asBiggestInt())".format(field.name, field.typ)
     of "uint", "uint8", "uint16", "uint32", "uint64":
-      setter = "o.$1 = $2(val.asBiggestUInt())" % [field.name, field.typ]
+      setter = "o.$1 = $2(val.asBiggestUInt())".format(field.name, field.typ)
     of "float", "float32", "float64":
-      setter = "o.$1 = $2(val.asBiggestFloat())" % [field.name, field.typ]
+      setter = "o.$1 = $2(val.asBiggestFloat())".format(field.name, field.typ)
     of "string":
-      setter = "o.$1 = val.asString()" % [field.name]
+      setter = "o.$1 = val.asString()".format(field.name)
     else:
       continue
       #raise newException(Exception, "setValue() can't handle type: " & field.typ)
     
-    code &= "  of \"$1\":\n" % [field.name]
+    code &= "  of \"$1\":\n".format(field.name)
     code &= "    " & setter & "\n"
   code &= """  else: raise newException(Exception, "Unknown field: " & name)"""
   code &= "\n\n"
   
   # Build getValue().
-  code &= "method getValue*(o: $1, name: string): Value =\n" % [typeName]
+  code &= "method getValue*(o: $1, name: string): Value =\n".format(typeName)
   code &= "  case name\n"
   for field in fields:
-    code &= """  of "$1": result = toValue(o.$1)""" % [field.name]
+    code &= """  of "$1": result = toValue(o.$1)""".format(field.name)
     code &= "\n"
   code &= """  else: raise newException(Exception, "Unknown field: " & name)"""
   code &= "\n\n"
