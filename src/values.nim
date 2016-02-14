@@ -471,10 +471,10 @@ proc `[]`*(v: ValueRef, key: string): ValueRef =
   v.map[key]
 
 
-proc `.=`*[T](v: ValueRef, key: expr, val: T) =
+proc `.=`*[T](v: ValueRef, key: auto, val: T) =
   v[string(key)] = val
 
-proc `.`*(v: ValueRef, key: expr): ValueRef =
+proc `.`*(v: ValueRef, key: auto): ValueRef =
   return v[string(key)]
 
 proc toMap*(t: tuple): ValueRef =
